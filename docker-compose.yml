@@ -1,0 +1,301 @@
+services:
+  # Frontend
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=/api
+      - VITE_WS_URL=/
+    networks:
+      - chess-network
+
+  # API Gateway
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./api-gateway/nginx/conf:/etc/nginx/conf.d
+      - ./api-gateway/nginx/html:/usr/share/nginx/html
+      - ./api-gateway/nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - frontend
+      - auth-service
+      - matchmaking-service
+      - game-session-service
+      - move-validation-service
+      - websocket-service
+      - leaderboard-service
+      - notification-service
+      - chat-service
+      - replay-service
+      - ai-bot-service
+    networks:
+      - chess-network
+
+  # Services
+  auth-service:
+    build: ./auth-service
+    ports:
+      - "3001:3001"
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=chess_auth
+      - DB_USER=chess_user
+      - DB_PASSWORD=chess_password
+      - JWT_SECRET=dev-secret-change-me
+      - REDIS_HOST=redis
+      - KAFKA_BROKERS=kafka:9092
+      - JWT_SECRET=dev-secret-change-me
+    depends_on:
+      - mysql
+      - redis
+      - kafka
+    networks:
+      - chess-network
+
+  matchmaking-service:
+    build: ./matchmaking-service
+    ports:
+      - "3002:3002"
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=chess_matchmaking
+      - DB_USER=chess_user
+      - DB_PASSWORD=chess_password
+      - REDIS_HOST=redis
+      - KAFKA_BROKERS=kafka:9092
+      - JWT_SECRET=dev-secret-change-me
+    depends_on:
+      - mysql
+      - redis
+      - kafka
+    networks:
+      - chess-network
+
+  game-session-service:
+    build: ./game-session-service
+    ports:
+      - "3003:3003"
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=chess_games
+      - DB_USER=chess_user
+      - DB_PASSWORD=chess_password
+      - REDIS_HOST=redis
+      - KAFKA_BROKERS=kafka:9092
+      - JWT_SECRET=dev-secret-change-me
+    depends_on:
+      - mysql
+      - redis
+      - kafka
+    networks:
+      - chess-network
+
+  move-validation-service:
+    build: ./move-validation-service
+    ports:
+      - "3004:3004"
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - JWT_SECRET=dev-secret-change-me
+    depends_on:
+      - kafka
+    networks:
+      - chess-network
+
+  websocket-service:
+    build: ./websocket-service
+    ports:
+      - "3005:3005"
+    environment:
+      - REDIS_HOST=redis
+      - KAFKA_BROKERS=kafka:9092
+      - JWT_SECRET=dev-secret-change-me
+    depends_on:
+      - redis
+      - kafka
+    networks:
+      - chess-network
+
+  leaderboard-service:
+    build: ./leaderboard-service
+    ports:
+      - "3006:3006"
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=chess_leaderboard
+      - DB_USER=chess_user
+      - DB_PASSWORD=chess_password
+      - REDIS_HOST=redis
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - mysql
+      - redis
+      - kafka
+    networks:
+      - chess-network
+
+  notification-service:
+    build: ./notification-service
+    ports:
+      - "3007:3007"
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - kafka
+    networks:
+      - chess-network
+
+  chat-service:
+    build: ./chat-service
+    ports:
+      - "3009:3009"
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=chess_chat
+      - DB_USER=chess_user
+      - DB_PASSWORD=chess_password
+      - KAFKA_BROKERS=kafka:9092
+      - JWT_SECRET=dev-secret-change-me
+    depends_on:
+      - mysql
+      - kafka
+    networks:
+      - chess-network
+
+  replay-service:
+    build: ./replay-service
+    ports:
+      - "3010:3010"
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=chess_games
+      - DB_USER=chess_user
+      - DB_PASSWORD=chess_password
+      - JWT_SECRET=dev-secret-change-me
+    depends_on:
+      - mysql
+    networks:
+      - chess-network
+
+  ai-bot-service:
+    build: ./ai-bot-service
+    ports:
+      - "3011:3011"
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - kafka
+    networks:
+      - chess-network
+
+  # Databases
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_USER: chess_user
+      MYSQL_PASSWORD: chess_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d
+    networks:
+      - chess-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis/config/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - chess-network
+
+  # Message Queue
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.2
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - chess-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.2
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
+    volumes:
+      - ./kafka/config/server.properties:/etc/kafka/server.properties
+    networks:
+      - chess-network
+
+  # Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    networks:
+      - chess-network
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3008:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - chess-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    networks:
+      - chess-network
+
+volumes:
+  mysql_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  chess-network:
+    driver: bridge

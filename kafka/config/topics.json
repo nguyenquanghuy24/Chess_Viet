@@ -1,0 +1,34 @@
+{
+  "topics": [
+    {
+      "name": "user-events",
+      "numPartitions": 3,
+      "replicationFactor": 1
+    },
+    {
+      "name": "matchmaking-events",
+      "numPartitions": 3,
+      "replicationFactor": 1
+    },
+    {
+      "name": "game-events",
+      "numPartitions": 6,
+      "replicationFactor": 1
+    },
+    {
+      "name": "move-validation-events",
+      "numPartitions": 4,
+      "replicationFactor": 1
+    },
+    {
+      "name": "leaderboard-events",
+      "numPartitions": 2,
+      "replicationFactor": 1
+    },
+    {
+      "name": "notification-events",
+      "numPartitions": 2,
+      "replicationFactor": 1
+    }
+  ]
+}
