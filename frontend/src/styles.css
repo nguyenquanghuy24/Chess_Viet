@@ -1,6 +1,43 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: #101311; color: #f3f5ef; font-family: Inter, system-ui, Arial, sans-serif; }
 button, input, select { font: inherit; }
+
+/* Auth Components */
+.auth-wrapper { min-height: 100vh; display: grid; place-content: center; padding: 24px; }
+.auth-tabs { display: flex; background: #171b18; border-radius: 8px; margin-bottom: 24px; overflow: hidden; }
+.tab-btn { flex: 1; padding: 12px 24px; background: #171b18; border: none; color: #b8c2b0; cursor: pointer; font-size: 16px; font-weight: 600; transition: all 0.2s; }
+.tab-btn.active { background: #7fa650; color: #101311; }
+.tab-btn:hover:not(.active) { background: #262c27; }
+
+.auth-container { min-height: 100vh; display: grid; place-content: center; padding: 24px; }
+.auth-form { background: #171b18; border: 1px solid #2d332e; border-radius: 12px; padding: 40px; max-width: 420px; width: 100%; }
+.auth-form h1 { margin: 0 0 12px; font-size: 36px; text-align: center; }
+.auth-form .tagline { text-align: center; color: #b8c2b0; margin-bottom: 32px; }
+
+.demo-login { text-align: center; margin-top: 24px; padding: 24px; background: #0f120f; border-radius: 8px; border: 1px solid #2d332e; }
+.demo-login p { color: #b8c2b0; margin-bottom: 12px; }
+.demo-login button { border: 0; background: #262c27; color: #f3f5ef; border-radius: 6px; padding: 10px 20px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+.demo-login button:hover { background: #1f231f; }
+
+.form-group { margin-bottom: 20px; }
+.form-group label { display: block; margin-bottom: 8px; font-weight: 600; color: #d7ddcf; }
+.form-group input { width: 100%; padding: 12px 16px; background: #0f120f; border: 1px solid #343b35; border-radius: 6px; color: #f3f5ef; font-size: 16px; }
+.form-group input:focus { outline: none; border-color: #7fa650; }
+
+.password-input { position: relative; }
+.password-input input { padding-right: 48px; }
+.password-toggle { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; color: #b8c2b0; cursor: pointer; padding: 4px; }
+
+.error-message { background: #d32f2f; color: white; padding: 12px; border-radius: 6px; margin-bottom: 20px; text-align: center; }
+
+.submit-btn { width: 100%; border: 0; background: #7fa650; color: #101311; border-radius: 6px; padding: 14px 20px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; }
+.submit-btn:hover:not(:disabled) { background: #6a8a4a; }
+.submit-btn:disabled { opacity: 0.65; cursor: wait; }
+
+.switch-form { text-align: center; margin-top: 24px; color: #b8c2b0; }
+.switch-form .link-btn { background: none; border: none; color: #7fa650; cursor: pointer; font-weight: 600; text-decoration: underline; }
+
+/* Demo login styles */
 .login { min-height: 100vh; display: grid; place-content: center; gap: 16px; text-align: center; padding: 24px; }
 .login h1 { margin: 0; font-size: 42px; }
 .login button, .wide { border: 0; background: #7fa650; color: #101311; border-radius: 6px; padding: 12px 16px; font-weight: 800; cursor: pointer; }

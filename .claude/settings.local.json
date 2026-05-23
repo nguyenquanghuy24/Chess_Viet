@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash([ -f \"$service/Dockerfile\" ])"
+      "Bash([ -f \"$service/Dockerfile\" ])",
+      "Bash(npm run *)"
     ]
   }
 }

@@ -4,6 +4,8 @@ import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { io } from 'socket.io-client';
 import { Bell, Bot, Clock, Eye, Flag, Handshake, History, MessageSquare, Swords, Users, Wifi } from 'lucide-react';
+import { Login } from './components/Login';
+import { Register } from './components/Register';
 import './styles.css';
 
 const api = import.meta.env.VITE_API_URL || '/api';
@@ -68,6 +70,7 @@ function App() {
   const chess = useMemo(() => new Chess(), []);
   const [token, setToken] = useState(localStorage.getItem('token') || '');
   const [user, setUser] = useState<User | null>(JSON.parse(localStorage.getItem('user') || 'null'));
+  const [showAuth, setShowAuth] = useState<'login' | 'register'>('login');
   const [fen, setFen] = useState(chess.fen());
   const [pgn, setPgn] = useState('');
   const [gameId, setGameId] = useState('demo-room');
@@ -100,6 +103,20 @@ function App() {
     setToken(auth.token);
     setUser(auth.user);
   }
+
+  const handleLogin = (authToken: string, userData: any) => {
+    setToken(authToken);
+    setUser(userData);
+  };
+
+  const handleRegister = (authToken: string, userData: any) => {
+    setToken(authToken);
+    setUser(userData);
+  };
+
+  const toggleAuthMode = () => {
+    setShowAuth(showAuth === 'login' ? 'register' : 'login');
+  };
 
   function resetBoard() {
     chess.reset();
@@ -263,10 +280,32 @@ function App() {
 
   if (!token || !user) {
     return (
-      <main className="login">
-        <h1>Chess Viet</h1>
-        <p>Demo login tạo JWT để bảo vệ REST API và Socket.IO.</p>
-        <button onClick={demoLogin}>Create demo player</button>
+      <main className="auth-wrapper">
+        <div className="auth-tabs">
+          <button
+            className={`tab-btn ${showAuth === 'login' ? 'active' : ''}`}
+            onClick={() => setShowAuth('login')}
+          >
+            Login
+          </button>
+          <button
+            className={`tab-btn ${showAuth === 'register' ? 'active' : ''}`}
+            onClick={() => setShowAuth('register')}
+          >
+            Register
+          </button>
+        </div>
+
+        {showAuth === 'login' ? (
+          <Login onLogin={handleLogin} />
+        ) : (
+          <Register onRegister={handleRegister} />
+        )}
+
+        <div className="demo-login">
+          <p>Or try a demo account:</p>
+          <button onClick={demoLogin}>Create demo player</button>
+        </div>
       </main>
     );
   }
