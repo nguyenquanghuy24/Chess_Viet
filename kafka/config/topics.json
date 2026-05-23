@@ -21,11 +21,6 @@
       "replicationFactor": 1
     },
     {
-      "name": "leaderboard-events",
-      "numPartitions": 2,
-      "replicationFactor": 1
-    },
-    {
       "name": "notification-events",
       "numPartitions": 2,
       "replicationFactor": 1

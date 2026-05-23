@@ -21,6 +21,82 @@ const producer = kafka.producer();
 const consumer = kafka.consumer({ groupId: `${service}-group` });
 app.get('/health', (_req, res) => res.json({ service, status: 'ok', sockets: io.engine.clientsCount }));
 app.get('/metrics', (_req, res) => res.type('text/plain').send(`service_up{service="${service}"} 1\nwebsocket_clients ${io.engine.clientsCount}\n`));
+function parsePresence(socketId, raw, state) {
+    let parsed = {};
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        parsed = {};
+    }
+    const userId = parsed.userId || socketId;
+    const spectator = !!parsed.spectator;
+    const role = spectator
+        ? 'spectator'
+        : userId === state.whiteId
+            ? 'white'
+            : userId === state.blackId
+                ? 'black'
+                : state.id
+                    ? 'spectator'
+                    : 'viewer';
+    return {
+        socketId,
+        userId,
+        username: parsed.username,
+        spectator,
+        role,
+        connectedAt: Number(parsed.at || Date.now()),
+        connections: 1
+    };
+}
+function dedupePresence(entries) {
+    const byUserRole = new Map();
+    for (const entry of entries) {
+        const key = `${entry.role}:${entry.userId}`;
+        const existing = byUserRole.get(key);
+        if (!existing) {
+            byUserRole.set(key, entry);
+            continue;
+        }
+        existing.connections += 1;
+        existing.connectedAt = Math.min(existing.connectedAt, entry.connectedAt);
+    }
+    return [...byUserRole.values()].sort((a, b) => a.connectedAt - b.connectedAt);
+}
+async function getPresence(gameId) {
+    const [rawPresence, state] = await Promise.all([
+        redis.hGetAll(`presence:${gameId}`),
+        redis.hGetAll(`game:${gameId}`)
+    ]);
+    const entries = dedupePresence(Object.entries(rawPresence).map(([socketId, raw]) => parsePresence(socketId, raw, state)));
+    const players = entries.filter((entry) => entry.role === 'white' || entry.role === 'black');
+    const spectators = entries.filter((entry) => entry.role === 'spectator' || entry.role === 'viewer');
+    return {
+        gameId,
+        total: entries.length,
+        playersOnline: players.length,
+        spectatorsOnline: spectators.length,
+        white: entries.find((entry) => entry.role === 'white') || null,
+        black: entries.find((entry) => entry.role === 'black') || null,
+        players,
+        spectators
+    };
+}
+async function emitPresence(gameId) {
+    io.to(`game:${gameId}`).emit('presence:changed', await getPresence(gameId));
+}
+async function leaveGameRooms(socket, keepGameId) {
+    const rooms = [...socket.rooms].filter((room) => room.startsWith('game:'));
+    for (const room of rooms) {
+        const gameId = room.replace('game:', '');
+        if (gameId === keepGameId)
+            continue;
+        socket.leave(room);
+        await redis.hDel(`presence:${gameId}`, socket.id);
+        await emitPresence(gameId);
+    }
+}
 io.use((socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.query?.token;
     if (!token && process.env.AUTH_REQUIRED === 'false') {
@@ -40,16 +116,67 @@ io.use((socket, next) => {
 });
 io.on('connection', (socket) => {
     const authedUser = socket.data.user;
+    socket.join(`user:${authedUser.id}`);
     socket.on('game:join', async ({ gameId, spectator }) => {
-        socket.join(`game:${gameId}`);
-        await redis.hSet(`presence:${gameId}`, socket.id, JSON.stringify({ userId: authedUser.id, username: authedUser.username, spectator: !!spectator, at: Date.now() }));
-        const state = await redis.hGetAll(`game:${gameId}`);
+        const nextGameId = String(gameId || '');
+        if (!nextGameId)
+            return;
+        await leaveGameRooms(socket, nextGameId);
+        socket.join(`game:${nextGameId}`);
+        await redis.hSet(`presence:${nextGameId}`, socket.id, JSON.stringify({ userId: authedUser.id, username: authedUser.username, spectator: !!spectator, at: Date.now() }));
+        const state = await redis.hGetAll(`game:${nextGameId}`);
         socket.emit('game:state', state);
-        io.to(`game:${gameId}`).emit('presence:changed', await redis.hLen(`presence:${gameId}`));
+        await emitPresence(nextGameId);
     });
     socket.on('game:move', async (payload, ack) => {
-        await producer.send({ topic: 'move.requested', messages: [{ key: payload.gameId, value: JSON.stringify({ gameId: payload.gameId, playerId: authedUser.id, from: payload.from, to: payload.to, promotion: payload.promotion || 'q', socketId: socket.id, at: new Date().toISOString() }) }] }).catch(console.warn);
-        ack?.({ accepted: true, queued: true });
+        const gameId = String(payload.gameId || '');
+        const state = await redis.hGetAll(`game:${gameId}`);
+        if (!state.id) {
+            const rejected = { gameId, reason: 'game_not_found' };
+            socket.emit('move.rejected', rejected);
+            ack?.({ accepted: false, ...rejected });
+            return;
+        }
+        if (state.status !== 'active') {
+            const rejected = { gameId, reason: 'game_not_active' };
+            socket.emit('move.rejected', rejected);
+            ack?.({ accepted: false, ...rejected });
+            return;
+        }
+        const playerColor = authedUser.id === state.whiteId ? 'white' : authedUser.id === state.blackId ? 'black' : null;
+        if (!playerColor) {
+            const rejected = { gameId, reason: 'player_not_in_game' };
+            socket.emit('move.rejected', rejected);
+            ack?.({ accepted: false, ...rejected });
+            return;
+        }
+        if (playerColor !== state.turn) {
+            const rejected = { gameId, reason: 'not_your_turn' };
+            socket.emit('move.rejected', rejected);
+            ack?.({ accepted: false, ...rejected });
+            return;
+        }
+        const event = {
+            gameId,
+            playerId: authedUser.id,
+            from: payload.from,
+            to: payload.to,
+            promotion: payload.promotion || 'q',
+            fen: state.fen,
+            moveNumber: state.moveNumber,
+            socketId: socket.id,
+            at: new Date().toISOString()
+        };
+        try {
+            await producer.send({ topic: 'move.requested', messages: [{ key: gameId, value: JSON.stringify(event) }] });
+            ack?.({ accepted: true, queued: true });
+        }
+        catch (error) {
+            console.warn(error);
+            const rejected = { gameId, reason: 'message_queue_unavailable' };
+            socket.emit('move.rejected', rejected);
+            ack?.({ accepted: false, ...rejected });
+        }
     });
     socket.on('chat:message', async (payload) => {
         const event = { ...payload, userId: authedUser.id, username: authedUser.username, body: String(payload.body || '').slice(0, 500) };
@@ -61,7 +188,7 @@ io.on('connection', (socket) => {
             if (room.startsWith('game:')) {
                 const gameId = room.replace('game:', '');
                 await redis.hDel(`presence:${gameId}`, socket.id);
-                io.to(room).emit('presence:changed', await redis.hLen(`presence:${gameId}`));
+                await emitPresence(gameId);
             }
         }
     });
@@ -69,6 +196,8 @@ io.on('connection', (socket) => {
 async function main() {
     await Promise.all([redis.connect(), producer.connect().catch(() => undefined), consumer.connect().catch(() => undefined)]);
     await consumer.subscribe({ topic: 'move.played', fromBeginning: false }).catch(() => undefined);
+    await consumer.subscribe({ topic: 'move.rejected', fromBeginning: false }).catch(() => undefined);
+    await consumer.subscribe({ topic: 'match.created', fromBeginning: false }).catch(() => undefined);
     await consumer.subscribe({ topic: 'game.started', fromBeginning: false }).catch(() => undefined);
     await consumer.subscribe({ topic: 'game.finished', fromBeginning: false }).catch(() => undefined);
     await consumer.subscribe({ topic: 'timer.tick', fromBeginning: false }).catch(() => undefined);
@@ -79,7 +208,19 @@ async function main() {
             if (!message.value)
                 return;
             const event = JSON.parse(message.value.toString());
-            io.to(`game:${event.gameId || event.matchId}`).emit(topic, event);
+            if (topic === 'move.rejected' && event.socketId) {
+                io.to(event.socketId).emit(topic, event);
+                return;
+            }
+            if (topic === 'match.created') {
+                io.to(`user:${event.whiteId}`).emit('match:found', { ...event, color: 'white' });
+                io.to(`user:${event.blackId}`).emit('match:found', { ...event, color: 'black' });
+                return;
+            }
+            const gameId = event.gameId || event.matchId;
+            io.to(`game:${gameId}`).emit(topic, event);
+            if (topic === 'game.started')
+                await emitPresence(gameId);
             if (topic === 'move.played')
                 io.to(`game:${event.gameId}`).emit('game:state:patch', event);
         }

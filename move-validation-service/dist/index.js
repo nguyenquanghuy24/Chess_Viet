@@ -12,12 +12,20 @@ const kafka = new kafkajs_1.Kafka({ clientId: service, brokers: (process.env.KAF
 const producer = kafka.producer();
 const consumer = kafka.consumer({ groupId: `${service}-group` });
 const boards = new Map();
+function chessFromFen(fen) {
+    try {
+        return fen && fen !== 'startpos' ? new chess_js_1.Chess(fen) : new chess_js_1.Chess();
+    }
+    catch {
+        return new chess_js_1.Chess();
+    }
+}
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
 app.get('/health', (_req, res) => res.json({ service, status: 'ok' }));
 app.get('/metrics', (_req, res) => res.type('text/plain').send(`service_up{service="${service}"} 1\n`));
 app.post('/validate', (req, res) => {
-    const chess = new chess_js_1.Chess(req.body.fen || undefined);
+    const chess = chessFromFen(req.body.fen);
     const move = chess.move({ from: req.body.from, to: req.body.to, promotion: req.body.promotion || 'q' });
     res.json({
         legal: !!move,
@@ -36,20 +44,32 @@ async function publish(topic, key, value) {
 async function main() {
     await Promise.all([producer.connect().catch(() => undefined), consumer.connect().catch(() => undefined)]);
     await consumer.subscribe({ topic: 'move.requested', fromBeginning: false }).catch(() => undefined);
+    await consumer.subscribe({ topic: 'game.started', fromBeginning: false }).catch(() => undefined);
+    await consumer.subscribe({ topic: 'game.finished', fromBeginning: false }).catch(() => undefined);
     await consumer.run({
-        eachMessage: async ({ message }) => {
+        eachMessage: async ({ topic, message }) => {
             if (!message.value)
                 return;
             const event = JSON.parse(message.value.toString());
-            const chess = boards.get(event.gameId) || new chess_js_1.Chess();
-            const move = chess.move({ from: event.from, to: event.to, promotion: event.promotion || 'q' });
-            if (!move) {
-                await publish('move.rejected', event.gameId, { ...event, reason: 'illegal_move' });
+            const gameId = event.gameId || event.matchId;
+            if (topic === 'game.started') {
+                boards.set(gameId, chessFromFen(event.fen));
                 return;
             }
-            boards.set(event.gameId, chess);
-            await publish('move.validated', event.gameId, {
+            if (topic === 'game.finished') {
+                boards.delete(gameId);
+                return;
+            }
+            const chess = event.fen ? chessFromFen(event.fen) : boards.get(gameId) || new chess_js_1.Chess();
+            const move = chess.move({ from: event.from, to: event.to, promotion: event.promotion || 'q' });
+            if (!move) {
+                await publish('move.rejected', gameId, { ...event, gameId, reason: 'illegal_move' });
+                return;
+            }
+            boards.set(gameId, chess);
+            await publish('move.validated', gameId, {
                 ...event,
+                gameId,
                 san: move.san,
                 fen: chess.fen(),
                 check: chess.isCheck(),

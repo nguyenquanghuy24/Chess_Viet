@@ -28,14 +28,6 @@ async function initDb() {
     id VARCHAR(36) PRIMARY KEY, user_id VARCHAR(36), rating INT, time_control VARCHAR(20),
     event_type VARCHAR(40), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS tournaments (
-    id VARCHAR(36) PRIMARY KEY, name VARCHAR(120), status VARCHAR(20), creator_id VARCHAR(36),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS tournament_players (
-    tournament_id VARCHAR(36), user_id VARCHAR(36), rating INT DEFAULT 1200,
-    PRIMARY KEY(tournament_id, user_id)
-  )`);
 }
 function requireAuth(req, res, next) {
     if (process.env.AUTH_REQUIRED === 'false')
@@ -111,32 +103,6 @@ app.delete('/queue/:userId', async (req, res) => {
     for await (const key of redis.scanIterator({ MATCH: pattern }))
         await redis.zRem(String(key), req.params.userId);
     res.json({ status: 'cancelled', userId: req.params.userId });
-});
-app.post('/tournaments', requireAuth, async (req, res) => {
-    const id = (0, crypto_1.randomUUID)();
-    await pool.execute('INSERT INTO tournaments (id, name, status, creator_id) VALUES (?, ?, ?, ?)', [id, req.body.name || 'Demo Arena', 'open', req.user.id]);
-    res.status(201).json({ id, name: req.body.name || 'Demo Arena', status: 'open' });
-});
-app.get('/tournaments', async (_req, res) => {
-    const [rows] = await pool.execute('SELECT * FROM tournaments ORDER BY created_at DESC LIMIT 20');
-    res.json(rows);
-});
-app.post('/tournaments/:id/join', requireAuth, async (req, res) => {
-    await pool.execute('INSERT IGNORE INTO tournament_players (tournament_id, user_id, rating) VALUES (?, ?, ?)', [req.params.id, req.user.id, req.body.rating || 1200]);
-    res.status(201).json({ tournamentId: req.params.id, userId: req.user.id });
-});
-app.post('/tournaments/:id/pairings', requireAuth, async (req, res) => {
-    const [rows] = await pool.execute('SELECT user_id, rating FROM tournament_players WHERE tournament_id = ? ORDER BY rating DESC', [req.params.id]);
-    const players = rows;
-    const pairings = [];
-    for (let i = 0; i < players.length - 1; i += 2) {
-        const matchId = (0, crypto_1.randomUUID)();
-        const event = { matchId, tournamentId: req.params.id, whiteId: players[i].user_id, blackId: players[i + 1].user_id, timeControl: 'rapid', initialTimeMs: 300000, incrementMs: 2000 };
-        await publish('match.created', matchId, event);
-        pairings.push(event);
-    }
-    await pool.execute('UPDATE tournaments SET status = ? WHERE id = ?', ['running', req.params.id]);
-    res.json({ tournamentId: req.params.id, pairings });
 });
 app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
 async function main() {

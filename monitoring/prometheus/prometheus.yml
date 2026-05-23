@@ -11,7 +11,6 @@ scrape_configs:
           - game-session-service:3003
           - move-validation-service:3004
           - websocket-service:3005
-          - leaderboard-service:3006
           - notification-service:3007
           - chat-service:3009
           - replay-service:3010

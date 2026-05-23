@@ -15,11 +15,9 @@ services:
     build: ./api-gateway
     ports:
       - "80:80"
-      - "443:443"
     volumes:
       - ./api-gateway/nginx/conf:/etc/nginx/conf.d
       - ./api-gateway/nginx/html:/usr/share/nginx/html
-      - ./api-gateway/nginx/ssl:/etc/nginx/ssl
     depends_on:
       - frontend
       - auth-service
@@ -27,7 +25,6 @@ services:
       - game-session-service
       - move-validation-service
       - websocket-service
-      - leaderboard-service
       - notification-service
       - chat-service
       - replay-service
@@ -49,7 +46,6 @@ services:
       - JWT_SECRET=dev-secret-change-me
       - REDIS_HOST=redis
       - KAFKA_BROKERS=kafka:9092
-      - JWT_SECRET=dev-secret-change-me
     depends_on:
       - mysql
       - redis
@@ -118,25 +114,6 @@ services:
       - KAFKA_BROKERS=kafka:9092
       - JWT_SECRET=dev-secret-change-me
     depends_on:
-      - redis
-      - kafka
-    networks:
-      - chess-network
-
-  leaderboard-service:
-    build: ./leaderboard-service
-    ports:
-      - "3006:3006"
-    environment:
-      - DB_HOST=mysql
-      - DB_PORT=3306
-      - DB_NAME=chess_leaderboard
-      - DB_USER=chess_user
-      - DB_PASSWORD=chess_password
-      - REDIS_HOST=redis
-      - KAFKA_BROKERS=kafka:9092
-    depends_on:
-      - mysql
       - redis
       - kafka
     networks:

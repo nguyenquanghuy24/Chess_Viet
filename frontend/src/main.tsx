@@ -1,15 +1,31 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { io } from 'socket.io-client';
-import { Bell, Bot, Clock, Eye, Flag, Handshake, History, MessageSquare, Swords, Trophy, Users, Wifi } from 'lucide-react';
+import { Bell, Bot, Clock, Eye, Flag, Handshake, History, MessageSquare, Swords, Users, Wifi } from 'lucide-react';
 import './styles.css';
 
 const api = import.meta.env.VITE_API_URL || '/api';
 const socket = io(import.meta.env.VITE_WS_URL || '/', { transports: ['websocket'], autoConnect: false, reconnection: true });
 
 type User = { id: string; username: string; email: string; rating: number };
+type PresencePerson = {
+  userId: string;
+  username?: string;
+  role: 'white' | 'black' | 'spectator' | 'viewer';
+  connections?: number;
+};
+type PresenceState = {
+  gameId: string;
+  total: number;
+  playersOnline: number;
+  spectatorsOnline: number;
+  white: PresencePerson | null;
+  black: PresencePerson | null;
+  players: PresencePerson[];
+  spectators: PresencePerson[];
+};
 
 function authHeaders(token: string) {
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -22,6 +38,32 @@ function formatClock(ms: number) {
   return `${minutes}:${seconds}`;
 }
 
+function emptyPresence(gameId: string): PresenceState {
+  return { gameId, total: 0, playersOnline: 0, spectatorsOnline: 0, white: null, black: null, players: [], spectators: [] };
+}
+
+function normalizePresence(payload: any, fallbackGameId: string): PresenceState {
+  if (typeof payload === 'number') {
+    return { ...emptyPresence(fallbackGameId), total: payload };
+  }
+  return {
+    gameId: payload?.gameId || fallbackGameId,
+    total: Number(payload?.total || 0),
+    playersOnline: Number(payload?.playersOnline || 0),
+    spectatorsOnline: Number(payload?.spectatorsOnline || 0),
+    white: payload?.white || null,
+    black: payload?.black || null,
+    players: payload?.players || [],
+    spectators: payload?.spectators || []
+  };
+}
+
+function displayPresenceName(person?: PresencePerson | null) {
+  if (!person) return 'Offline';
+  const base = person.username || person.userId.slice(0, 8);
+  return person.connections && person.connections > 1 ? `${base} (${person.connections})` : base;
+}
+
 function App() {
   const chess = useMemo(() => new Chess(), []);
   const [token, setToken] = useState(localStorage.getItem('token') || '');
@@ -30,17 +72,18 @@ function App() {
   const [pgn, setPgn] = useState('');
   const [gameId, setGameId] = useState('demo-room');
   const [messages, setMessages] = useState<any[]>([]);
-  const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
   const [replay, setReplay] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
-  const [tournaments, setTournaments] = useState<any[]>([]);
   const [connected, setConnected] = useState(socket.connected);
   const [whiteTimeMs, setWhiteTimeMs] = useState(300000);
   const [blackTimeMs, setBlackTimeMs] = useState(300000);
   const [aiColor, setAiColor] = useState<'white' | 'black'>('black');
-  const [difficulty, setDifficulty] = useState('medium');
   const [gameStatus, setGameStatus] = useState('idle');
+  const [matchmakingStatus, setMatchmakingStatus] = useState('Ready');
+  const [searching, setSearching] = useState(false);
+  const [presence, setPresence] = useState<PresenceState>(emptyPresence(gameId));
+  const gameIdRef = useRef(gameId);
 
   async function request(path: string, options: RequestInit = {}) {
     const res = await fetch(`${api}${path}`, { ...options, headers: { ...(token ? authHeaders(token) : { 'Content-Type': 'application/json' }), ...(options.headers || {}) } });
@@ -58,11 +101,41 @@ function App() {
     setUser(auth.user);
   }
 
+  function resetBoard() {
+    chess.reset();
+    setFen(chess.fen());
+    setPgn('');
+    setWhiteTimeMs(300000);
+    setBlackTimeMs(300000);
+    setPresence(emptyPresence(gameIdRef.current));
+  }
+
+  function joinMatchedGame(match: any) {
+    const nextGameId = match.matchId || match.gameId;
+    if (!nextGameId || !user) return;
+    resetBoard();
+    setGameId(nextGameId);
+    setPresence(emptyPresence(nextGameId));
+    setWhiteTimeMs(Number(match.initialTimeMs || 300000));
+    setBlackTimeMs(Number(match.initialTimeMs || 300000));
+    setSearching(false);
+    setMatchmakingStatus(`Matched as ${match.color || (match.whiteId === user.id ? 'white' : 'black')}`);
+    setGameStatus('active');
+    socket.emit('game:join', { gameId: nextGameId });
+    refreshData();
+  }
+
+  useEffect(() => {
+    gameIdRef.current = gameId;
+    setPresence(emptyPresence(gameId));
+    if (token && user && socket.connected) socket.emit('game:join', { gameId });
+  }, [token, user?.id, gameId]);
+
   useEffect(() => {
     if (!token || !user) return;
     socket.auth = { token };
     socket.connect();
-    socket.on('connect', () => { setConnected(true); socket.emit('game:join', { gameId }); });
+    socket.on('connect', () => { setConnected(true); socket.emit('game:join', { gameId: gameIdRef.current }); });
     socket.on('disconnect', () => setConnected(false));
     socket.on('game:state', (state) => {
       if (state.fen) {
@@ -89,32 +162,63 @@ function App() {
       setBlackTimeMs(event.blackTimeMs);
     });
     socket.on('game.finished', (event) => setGameStatus(`${event.reason}: ${event.result}`));
+    socket.on('move.rejected', (event) => setGameStatus(`move rejected: ${event.reason}`));
+    socket.on('match:found', joinMatchedGame);
+    socket.on('presence:changed', (payload) => setPresence(normalizePresence(payload, gameIdRef.current)));
     socket.on('draw.offered', () => setNotifications((items) => [{ topic: 'draw.offered', event: { message: 'Draw offered' } }, ...items]));
     socket.on('friend.invited', (event) => setNotifications((items) => [{ topic: 'friend.invited', event }, ...items]));
     socket.on('chat:message', (event) => setMessages((items) => [...items.slice(-20), event]));
-    socket.emit('game:join', { gameId });
+    socket.emit('game:join', { gameId: gameIdRef.current });
     refreshData();
     return () => { socket.removeAllListeners(); socket.disconnect(); };
-  }, [token, user?.id, gameId]);
+  }, [token, user?.id]);
 
   async function refreshData() {
     if (!token || !user) return;
-    fetch(`${api}/leaderboard`).then((r) => r.json()).then(setLeaderboard).catch(() => setLeaderboard([]));
     request('/games').then(setHistory).catch(() => setHistory([]));
     request(`/notifications/${user.id}`).then(setNotifications).catch(() => setNotifications([]));
-    fetch(`${api}/matchmaking/tournaments`).then((r) => r.json()).then(setTournaments).catch(() => setTournaments([]));
   }
 
   function onDrop(sourceSquare: string, targetSquare: string) {
-    if (!token || gameStatus.includes('finished') || gameStatus.includes('checkmate') || gameStatus.includes('draw')) return false;
-    socket.emit('game:move', { gameId, from: sourceSquare, to: targetSquare, promotion: 'q' });
+    if (!token || !socket.connected || gameStatus.includes('finished') || gameStatus.includes('checkmate') || gameStatus.includes('draw')) return false;
+    socket.emit('game:move', { gameId, from: sourceSquare, to: targetSquare, promotion: 'q' }, (ack: any) => {
+      if (!ack?.accepted) setGameStatus(`move rejected: ${ack?.reason || 'unknown'}`);
+    });
     return true;
+  }
+
+  async function findMatch() {
+    if (!user || searching) return;
+    resetBoard();
+    setSearching(true);
+    setMatchmakingStatus('Searching...');
+    setGameStatus('Searching...');
+    try {
+      const result = await request('/matchmaking/queue', {
+        method: 'POST',
+        body: JSON.stringify({ rating: user.rating || 1200, timeControl: 'rapid' })
+      });
+      if (result.status === 'matched') joinMatchedGame(result);
+    } catch (error) {
+      setSearching(false);
+      setMatchmakingStatus('Matchmaking failed');
+      setGameStatus('matchmaking failed');
+    }
+  }
+
+  function watchGame() {
+    if (!gameId || !socket.connected) return;
+    setSearching(false);
+    setMatchmakingStatus('Ready');
+    setGameStatus('spectating');
+    socket.emit('game:join', { gameId, spectator: true });
   }
 
   async function startAiGame() {
     if (!user) return;
-    chess.reset();
-    setFen(chess.fen());
+    resetBoard();
+    setSearching(false);
+    setMatchmakingStatus('Ready');
     setGameStatus('creating');
     const body = aiColor === 'black'
       ? { whiteId: user.id, blackId: 'ai-bot', timeControl: 'rapid' }
@@ -122,8 +226,8 @@ function App() {
     const game = await request('/games', { method: 'POST', body: JSON.stringify(body) });
     setGameId(game.matchId);
     socket.emit('game:join', { gameId: game.matchId });
-    await request(`/ai/games/${game.matchId}/configure`, { method: 'POST', body: JSON.stringify({ botColor: aiColor, difficulty, fen: chess.fen() }) });
-    setGameStatus(`playing AI ${aiColor} / ${difficulty}`);
+    await request(`/ai/games/${game.matchId}/configure`, { method: 'POST', body: JSON.stringify({ botColor: aiColor, fen: chess.fen() }) });
+    setGameStatus(`playing simple AI (${aiColor})`);
   }
 
   async function resign() {
@@ -138,21 +242,6 @@ function App() {
     const data = await request(`/replay/games/${id}/replay`);
     setReplay(data.events || []);
     setGameId(id);
-  }
-
-  async function createTournament() {
-    await request('/matchmaking/tournaments', { method: 'POST', body: JSON.stringify({ name: `Arena ${new Date().toLocaleTimeString()}` }) });
-    refreshData();
-  }
-
-  async function joinTournament(id: string) {
-    await request(`/matchmaking/tournaments/${id}/join`, { method: 'POST', body: JSON.stringify({ rating: user?.rating || 1200 }) });
-    refreshData();
-  }
-
-  async function pairTournament(id: string) {
-    await request(`/matchmaking/tournaments/${id}/pairings`, { method: 'POST', body: '{}' });
-    refreshData();
   }
 
   async function inviteFriend(event: React.FormEvent<HTMLFormElement>) {
@@ -186,8 +275,8 @@ function App() {
     <main className="shell">
       <aside className="rail">
         <h1>Chess Viet</h1>
-        <button><Swords size={18} /> Play</button>
-        <button><Eye size={18} /> Watch</button>
+        <button onClick={findMatch}><Swords size={18} /> Find Match</button>
+        <button onClick={watchGame}><Eye size={18} /> Watch</button>
         <button><Bot size={18} /> AI Bot</button>
         <button onClick={() => { localStorage.clear(); location.reload(); }}><Users size={18} /> Logout</button>
       </aside>
@@ -209,12 +298,35 @@ function App() {
 
       <aside className="panel">
         <section>
+          <h2><Swords size={18} /> Play Online</h2>
+          <button className="wide" onClick={findMatch} disabled={searching}>{searching ? 'Searching...' : 'Find Match'}</button>
+          <p className="statusLine">{matchmakingStatus}</p>
+        </section>
+
+        <section>
           <h2><Bot size={18} /> AI Bot</h2>
           <div className="controls">
             <select value={aiColor} onChange={(e) => setAiColor(e.target.value as 'white' | 'black')}><option value="black">Bot black</option><option value="white">Bot white</option></select>
-            <select value={difficulty} onChange={(e) => setDifficulty(e.target.value)}><option value="beginner">Beginner</option><option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option><option value="expert">Expert</option></select>
             <button onClick={startAiGame}>Start</button>
           </div>
+        </section>
+
+        <section>
+          <h2><Eye size={18} /> Spectators</h2>
+          <div className="presenceMeta">
+            <span><Users size={15} /> {presence.playersOnline}/2</span>
+            <span><Eye size={15} /> {presence.spectatorsOnline}</span>
+          </div>
+          <div className="presenceRows">
+            <p><b>White</b><span>{displayPresenceName(presence.white)}</span></p>
+            <p><b>Black</b><span>{displayPresenceName(presence.black)}</span></p>
+          </div>
+          <div className="presenceRows compact">
+            {presence.spectators.length
+              ? presence.spectators.map((person) => <p key={`${person.role}:${person.userId}`}><b>{person.role === 'viewer' ? 'Viewer' : 'Spectator'}</b><span>{displayPresenceName(person)}</span></p>)
+              : <p><b>Spectators</b><span>0 online</span></p>}
+          </div>
+          <button className="wide secondary" onClick={watchGame}>Watch</button>
         </section>
 
         <section>
@@ -229,12 +341,6 @@ function App() {
         </section>
 
         <section>
-          <h2><Trophy size={18} /> Tournament</h2>
-          <button className="wide" onClick={createTournament}>Create arena</button>
-          <div className="list">{tournaments.map((t) => <p key={t.id}><b>{t.name}</b><button onClick={() => joinTournament(t.id)}>Join</button><button onClick={() => pairTournament(t.id)}>Pair</button></p>)}</div>
-        </section>
-
-        <section>
           <h2><Bell size={18} /> Notifications</h2>
           <div className="list">{notifications.slice(0, 5).map((n, i) => <p key={i}><b>{n.topic}</b><span>{JSON.stringify(n.event).slice(0, 60)}</span></p>)}</div>
         </section>
@@ -243,11 +349,6 @@ function App() {
           <h2><MessageSquare size={18} /> Chat</h2>
           <div className="chat">{messages.map((m, i) => <p key={i}><b>{m.username || m.userId}</b> {m.body}</p>)}</div>
           <form onSubmit={sendMessage}><input name="message" placeholder="Message" /><button>Send</button></form>
-        </section>
-
-        <section>
-          <h2><Trophy size={18} /> Live Leaderboard</h2>
-          {leaderboard.length ? leaderboard.map((row) => <p key={row.userId}>#{row.rank} {row.userId} <b>{row.rating}</b></p>) : <p>No ratings yet</p>}
         </section>
       </aside>
     </main>
